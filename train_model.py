@@ -2,16 +2,23 @@ import tensorflow as tf
 from tensorflow.keras import layers, models
 import json
 
+# =====================
+# CONFIGURATION
+# =====================
 DATASET_PATH = "dataset"
 IMG_SIZE = (224, 224)
-BATCH_SIZE = 16
-EPOCHS = 20
+BATCH_SIZE = 8         # SMALL batch for small dataset
+EPOCHS = 30             # Enough with early stopping
+SEED = 42
 
+# =====================
+# LOAD DATASET
+# =====================
 train_ds = tf.keras.utils.image_dataset_from_directory(
     DATASET_PATH,
     validation_split=0.2,
     subset="training",
-    seed=123,
+    seed=SEED,
     image_size=IMG_SIZE,
     batch_size=BATCH_SIZE
 )
@@ -20,7 +27,7 @@ val_ds = tf.keras.utils.image_dataset_from_directory(
     DATASET_PATH,
     validation_split=0.2,
     subset="validation",
-    seed=123,
+    seed=SEED,
     image_size=IMG_SIZE,
     batch_size=BATCH_SIZE
 )
@@ -28,56 +35,51 @@ val_ds = tf.keras.utils.image_dataset_from_directory(
 class_names = train_ds.class_names
 NUM_CLASSES = len(class_names)
 
+print("Classes:", class_names)
+
+# Save class names
 with open("class_names.json", "w") as f:
     json.dump(class_names, f)
 
+# =====================
+# PERFORMANCE OPTIMIZATION
+# =====================
 AUTOTUNE = tf.data.AUTOTUNE
-train_ds = train_ds.cache().shuffle(1000).prefetch(AUTOTUNE)
-val_ds = val_ds.cache().prefetch(AUTOTUNE)
+train_ds = train_ds.shuffle(500).prefetch(AUTOTUNE)
+val_ds = val_ds.prefetch(AUTOTUNE)
 
-data_augmentation = models.Sequential([
+# =====================
+# DATA AUGMENTATION (STRONG – FOR SMALL DATA)
+# =====================
+data_augmentation = tf.keras.Sequential([
     layers.RandomFlip("horizontal"),
-    layers.RandomRotation(0.1),
-    layers.RandomZoom(0.1),
+    layers.RandomRotation(0.15),
+    layers.RandomZoom(0.2),
+    layers.RandomContrast(0.2),
 ])
 
-def build_model(model_name):
+# =====================
+# BUILD EFFICIENTNET MODEL
+# =====================
+def build_model():
     inputs = layers.Input(shape=(224, 224, 3))
     x = data_augmentation(inputs)
-    x = layers.Rescaling(1./255)(x)
+    x = tf.keras.applications.efficientnet.preprocess_input(x)
 
-    if model_name == "custom_cnn":
-        x = layers.Conv2D(32, 3, activation="relu")(x)
-        x = layers.MaxPooling2D()(x)
-        x = layers.Conv2D(64, 3, activation="relu")(x)
-        x = layers.MaxPooling2D()(x)
-        x = layers.Flatten()(x)
+    base_model = tf.keras.applications.EfficientNetB0(
+        include_top=False,
+        weights="imagenet",
+        input_shape=(224, 224, 3)
+    )
+    base_model.trainable = False   # IMPORTANT
 
-    elif model_name == "mobilenet":
-        base = tf.keras.applications.MobileNetV2(
-            include_top=False,
-            weights="imagenet",
-            input_shape=(224, 224, 3)
-        )
-        base.trainable = False
-        x = base(x)
-        x = layers.GlobalAveragePooling2D()(x)
+    x = base_model(x, training=False)
+    x = layers.GlobalAveragePooling2D()(x)
 
-    elif model_name == "efficientnet":
-        base = tf.keras.applications.EfficientNetB0(
-            include_top=False,
-            weights="imagenet",
-            input_shape=(224, 224, 3)
-        )
-        base.trainable = False
-        x = base(x)
-        x = layers.GlobalAveragePooling2D()(x)
-
-    else:
-        raise ValueError("Unknown model name")
-
-    x = layers.Dense(256, activation="relu")(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dense(128, activation="relu")(x)
     x = layers.Dropout(0.5)(x)
+
     outputs = layers.Dense(NUM_CLASSES, activation="softmax")(x)
 
     model = models.Model(inputs, outputs)
@@ -90,28 +92,57 @@ def build_model(model_name):
 
     return model
 
+# =====================
+# TRAIN MODEL
+# =====================
+model = build_model()
 
-model_names = ["custom_cnn", "mobilenet", "efficientnet"]
-
-
-for name in model_names:
-    print(f"\n🚀 Training {name.upper()}...\n")
-
-    model = build_model(name)
-
-    history = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=EPOCHS,
-        callbacks=[
-            tf.keras.callbacks.EarlyStopping(
-                monitor="val_loss",
-                patience=5,
-                restore_best_weights=True
-            )
-        ]
+callbacks = [
+    tf.keras.callbacks.EarlyStopping(
+        monitor="val_loss",
+        patience=7,
+        restore_best_weights=True
+    ),
+    tf.keras.callbacks.ModelCheckpoint(
+        "efficientnet_best_handicraft_model.keras",
+        monitor="val_accuracy",
+        save_best_only=True
     )
+]
 
-    model.save(f"{name}_handicraft_model.h5")
-    print(f"Model saved as {name}_handicraft_model.h5")
+history = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=EPOCHS,
+    callbacks=callbacks
+)
 
+
+import matplotlib.pyplot as plt
+
+# Get accuracy values
+train_acc = history.history["accuracy"]
+val_acc = history.history["val_accuracy"]
+
+epochs_range = range(1, len(train_acc) + 1)
+
+# Create plot
+plt.figure()
+plt.plot(epochs_range, train_acc, label="Training Accuracy")
+plt.plot(epochs_range, val_acc, label="Validation Accuracy")
+
+plt.xlabel("Epochs")
+plt.ylabel("Accuracy")
+plt.title("Accuracy vs Epoch")
+plt.legend()
+
+# ✅ SAVE GRAPH AS JPG
+plt.savefig("accuracy_vs_epoch.jpg", dpi=300, bbox_inches="tight")
+
+# Show graph
+plt.show()
+
+# =====================
+# SAVE FINAL MODEL
+# =====================
+print("✅ Best model saved as efficientnet_best_handicraft_model.keras")

@@ -2,35 +2,59 @@ import streamlit as st
 from PIL import Image
 import tensorflow as tf
 import numpy as np
-
 import json
 
+from tensorflow.keras.applications.efficientnet import preprocess_input
+
+# =========================
+# LOAD CLASS NAMES
+# =========================
 with open("class_names.json") as f:
     class_names = json.load(f)
 
-model_names = ["custom_cnn", "mobilenet", "efficientnet"]
+# =========================
+# STREAMLIT UI
+# =========================
 st.title("Handicraft Classification System")
+st.write("Upload an image to classify the handicraft")
 
+uploaded_file = st.file_uploader(
+    "Upload Handicraft Image",
+    type=["jpg", "jpeg", "png"]
+)
 
-uploaded_file = st.file_uploader("Upload Handicraft Image", type=["jpg","png"])
+# =========================
+# LOAD MODEL (SAVEDMODEL)
+# =========================
+@st.cache_resource
+def load_model():
+    return tf.keras.models.load_model("efficientnet_best_handicraft_model.keras")
 
-if uploaded_file:
-    img = Image.open(uploaded_file).resize((224,224))
-    img_array = np.array(img)/255.0
-    img_array = img_array.reshape(1,224,224,3)
+model = load_model()
 
-    
-    st.image(img, caption="Uploaded Image")
-    
-    for name in model_names:
-        try:
-            model_path = f"{name}_handicraft_model.h5"
-            model = tf.keras.models.load_model(model_path)
+# =========================
+# PREDICTION
+# =========================
+if uploaded_file is not None:
+    img = Image.open(uploaded_file).convert("RGB")
+    img = img.resize((224, 224))
 
-            prediction = model.predict(img_array)
-            predicted_class = class_names[np.argmax(prediction)]
+    st.image(img, caption="Uploaded Image", width=400)
 
-            st.success(f"Prediction from model {name}: {predicted_class}")
+    # Convert to array
+    img_array = np.array(img)
+    img_array = preprocess_input(img_array)
+    img_array = np.expand_dims(img_array, axis=0)
 
-        except Exception as e:
-            st.error(f"Failed to load or predict with model {name}: {e}")
+    # Predict
+    prediction = model.predict(img_array)
+    class_index = np.argmax(prediction)
+    confidence = float(np.max(prediction)) * 100
+
+    st.success(f"✅ Predicted Class: **{class_names[class_index]}**")
+    st.info(f"📊 Confidence: **{confidence:.2f}%**")
+
+    # Optional: show all probabilities
+    st.subheader("Class Probabilities")
+    for i, class_name in enumerate(class_names):
+        st.write(f"{class_name}: {prediction[0][i]*100:.2f}%")
